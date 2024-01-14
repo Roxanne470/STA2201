@@ -1,0 +1,142 @@
+---
+title: "Lab 1"
+author: "Roxanne Li"
+date: "2024-01-13"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Read in some packages that we'll be using:
+
+```{r}
+#| message: false
+#install.packages("tidyverse")
+library(tidyverse)
+```
+
+Read in mortality rates for Ontario:
+```{r}
+dm <- read_table("https://www.prdh.umontreal.ca/BDLC/data/ont/Mx_1x1.txt", skip = 2, col_types = "dcddd")
+head(dm)
+```
+## Q1
+
+Plot the ratio of female to male mortality rates over time for ages 10,20,30 and 40 (different color for each age) and change the theme.
+
+```{r}
+dm1 <- dm |> 
+  filter(Age==10|Age==20|Age==30|Age==40) |>
+  mutate(mf_ratio = Female/Male) 
+```
+
+```{r}
+dm1 |> 
+  ggplot(aes(x = Year, y = mf_ratio, color = Age)) + 
+  geom_line() + 
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Ratio of Female to Male Mortality Rates Over Time",
+       x = "Year",
+       y = "Ratio of Female to Male Mortality Rates") +
+  theme_minimal() 
+```
+
+## Q2
+
+Find the age that has the lowest female mortality rate each year.
+
+```{r}
+dm2 <- dm |> 
+  group_by(Year) |> 
+  slice(which.min(Female)) |>
+  select(Year, Age, Female)
+dm2
+```
+The table produced above shows the age that has the lowest female mortality rate each year.
+
+## Q3
+
+Use the `summarize(across())` syntax to calculate the standard deviation of mortality rates by age for the Male, Female and Total populations. 
+
+```{r}
+dm |> 
+  group_by(Age) |> 
+  summarize(across(c(Male, Female, Total), sd, na.rm = TRUE))
+```
+
+
+## Q4
+
+The Canadian HMD also provides population sizes over time (https://www.prdh.umontreal.ca/BDLC/data/ont/Population.txt). Use these to calculate the population weighted average mortality rate separately for males and females, for every year. Make a nice line plot showing the result (with meaningful labels/titles) and briefly comment on what you see (1 sentence). Hint: `left_join` will probably be useful here. 
+
+Reading the population file:
+```{r}
+pop <- read_table("https://www.prdh.umontreal.ca/BDLC/data/ont/Population.txt", 
+                  skip = 2, col_types = "dcddd")
+head(pop)
+```
+
+Left joining the mortality rate data with the population data and calculating population-weighted mortality rates for females and males:
+
+```{r}
+merged_data <- left_join(dm, pop, by=c("Year", "Age"), suffix=c(".dm", ".pop"), unmatched = "drop")
+merged_data$Pop_Weighted_Female <- (merged_data$Female.dm + merged_data$Male.dm) * 
+  (merged_data$Female.pop / merged_data$Total.pop)
+merged_data$Pop_Weighted_Male <- (merged_data$Female.dm + merged_data$Male.dm) * 
+  (merged_data$Male.pop / merged_data$Total.pop)
+head(merged_data)
+```
+
+Calculating population-weighted average mortality rates for females and males, by year.
+
+```{r}
+pop_weighted_avg <- merged_data |> 
+  group_by(Year) |> 
+  summarize(across(c(Pop_Weighted_Female, Pop_Weighted_Male), mean, na.rm = TRUE))
+head(pop_weighted_avg)
+```
+Turning the `pop_weighted_avg` into a pivot table for plotting:
+
+```{r}
+pop_weighted_avg_pivot <- pop_weighted_avg |> 
+  pivot_longer(Pop_Weighted_Female:Pop_Weighted_Male, names_to = "Sex", 
+               values_to = "Population_Weighted_Mortality")
+head(pop_weighted_avg_pivot)
+```
+Plotting the line plot for the population weighted average mortality rates of females and males over time:
+
+```{r}
+pop_weighted_avg_pivot |> 
+  ggplot(aes(x = Year, y = Population_Weighted_Mortality, color = Sex)) + 
+  geom_line() + 
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Population-Weighted Average Mortality Rates of Females and Males Over Time",
+       x = "Year",
+       y = "Mortality") +
+  theme_minimal() 
+```
+The population weighted average mortality rates show that over time, the rates for females have an upward trend and the rates for males have a downward trend.
+
+
+## Q5
+
+Write down using appropriate notation, and run a simple linear regression with logged mortality rates as the outcome and age (as a continuous variable) as the covariate, using data for females aged less than 106 for the year 2000. Interpret the coefficient on age. 
+
+Getting the data:
+```{r}
+data <- dm |> 
+  filter(Year==2000,  Age<106) |>
+  select(c(Year, Age, Female))
+head(data)
+```
+We fit a linear regression model $log(y_i) = \beta_{0} + \beta_{1}x_i + \epsilon_i$ where $y_i$ represents the female mortality rate, $x_i$ represents the female age, and $\epsilon_i$ represents the random error.
+
+```{r}
+data$Age <- as.numeric(data$Age)
+model <- lm(log(Female) ~ Age, data)
+summary(model)
+```
+The coefficient for `Age` is approximately 0.07. This means on average, if we keep everything else constant, then a female being one year older will be $e^{0.07} \approx 1.07$ times more likely to die in the year of 2000.
+
