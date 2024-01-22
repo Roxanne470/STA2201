@@ -127,7 +127,7 @@ Write down using appropriate notation, and run a simple linear regression with l
 Getting the data:
 ```{r}
 data <- dm |> 
-  filter(Year==2000,  Age<106) |>
+  filter(Year==2000 & Age<106) |>
   select(c(Year, Age, Female))
 head(data)
 ```
