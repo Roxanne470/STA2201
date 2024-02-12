@@ -1,0 +1,280 @@
+---
+title: "Lab 5"
+author: "Roxanne Li"
+date: "2024-02-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(rstan)
+library(tidybayes)
+library(here)
+```
+
+Reading in the data:
+
+```{r}
+kid <- read_rds("data/Kidiq.RDS")
+head(kid)
+```
+
+## Q1
+
+Plot the distribution of kid scores:
+
+```{r}
+kid |> 
+  ggplot(aes(kid_score)) +
+  geom_histogram(binwidth = 5, fill = "grey", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Kid Scores", x = "Kid Scores", y = "Density") +
+  theme_minimal()
+  
+```
+
+The histogram shows that the kid scores are distributed almost normally between 0 and 150.
+
+Plotting kid score versus mom IQ:
+
+```{r}
+kid |> 
+  ggplot(aes(mom_iq, kid_score)) +
+  geom_point() +
+  labs(title = "Kid Score Versus Mon IQ", x = "Mom IQ", y = "Kid Score") +
+  theme_minimal()
+```
+
+The scatter plot shows a positive linear relation between kid scores and mom IQ's.
+
+Plotting kid score versus mom age:
+
+```{r}
+kid |> 
+  group_by(mom_age) |>
+  summarise(avg_kid_score = mean(kid_score)) |>
+  ggplot(aes(x=avg_kid_score, y=mom_age)) +
+  geom_bar(stat = "identity", orientation = 'y') +
+  labs(title = "Average Kid Score by Mom Age", 
+       x = "Average Kid Score", y = "Mom Age") +
+  theme_minimal()
+```
+
+The bar plot of average kid score by mom ages show that when mom ages are between 20 and 25, the average kid scores are relatively lower than when mom ages are above 25 or below 20.
+
+Plotting kid score versus mom high school status:
+
+```{r}
+kid |> 
+  group_by(mom_hs) |>
+  summarise(avg_kid_score = mean(kid_score)) |>
+  ggplot(aes(x=avg_kid_score, y=mom_hs)) +
+  geom_bar(stat = "identity", orientation = 'y') +
+  labs(title = "Average Kid Score by Mom HS", 
+       x = "Average Kid Score", y = "Mom HS") +
+  theme_minimal()
+```
+
+The bar plot shows that the average kid score of moms who went to high school is higher than moms who didn't attend high school.
+
+
+## Q2
+
+Change the prior to be much more informative (by changing the standard deviation to be 0.1). Rerun the model. Do the estimates change? Plot the prior and posterior densities.
+
+
+```{r}
+y <- kid$kid_score
+mu0 <- 80
+sigma0 <- 0.1
+# named list to input for stan function
+data1 <- list(y = y,
+            N = length(y),
+            mu0 = mu0,
+            sigma0 = sigma0)
+```
+
+Run the model:
+
+```{r}
+fit1 <- stan(file = "code/models/kids2.stan",
+              data = data1,
+              chains = 3,
+              iter = 500)
+```
+
+Print the estimates:
+
+```{r}
+print(fit1)
+```
+The estimates changed. $\hat\mu$ decreased from 86 to around 80 and $\hat\sigma$ increased from 20 to 21.
+
+Plot the posterior and prior distribution:
+
+```{r}
+dsamples <- fit1 |>
+  gather_draws(mu, sigma) # gather = long format
+
+dsamples |>
+  filter(.variable == "mu") |>
+  ggplot(aes(.value, color = "posterior")) + 
+  geom_density(size = 1) +
+  xlim(c(70, 100)) +
+  stat_function(fun = dnorm,
+                args = list(mean = mu0,
+                sd = sigma0),
+                aes(colour = 'prior'), size = 1) +
+  scale_color_manual(name = "", values = c("prior" = "red", "posterior" = "black")) +
+  ggtitle("Prior and posterior for mean test scores") +
+  xlab("score")
+```
+
+The posterior mean of scores is centered around 80, which is the estimate of $\mu$ we obtained in the fitting result. 
+
+
+## Q3
+
+### a) 
+
+Confirm that the estimates of the intercept and slope are comparable to results from lm().
+
+```{r}
+X <- as.matrix(kid$mom_hs, ncol = 1) # force this to be a matrix
+K <- 1
+data2 <- list(y = y, 
+             N = length(y),
+             X = X, 
+             K = K)
+
+fit2 <- stan(file = "code/models/kids3.stan",
+              data = data2,
+              iter = 1000)
+```
+Print the estimates of the parameters:
+
+```{r}
+print(fit2)
+```
+
+Now, fit the regression model using lm:
+
+```{r}
+lm <- lm(kid_score ~ mom_hs, data=kid)
+summary(lm)
+```
+
+The estimate for the intercept $\alpha$ from lm() is around 77.5, which is close to the posterior mean of $\alpha$ (78.1). Similarly, the estimate for $\beta$ from lm() is around 11.7, which is just slightly higher than the posterior mean of $\beta$ (11.1). Thus, we confirm that the estimates of the intercept and slope are comparable to results from lm().
+
+To estimate $\sigma$ from lm(), we use the unbiased estimator as follows:
+
+$$
+\hat \sigma^2 = \frac{SSE}{n-2} \\
+$$
+
+```{r}
+sigma_2 <- sqrt(sum(lm$residuals^2) / (length(y) - 2))
+sigma_2
+```
+
+The estimated $\sigma^2$ from lm() is around 19.85 and the posterior mean of $\sigma^2$ is around 19.82. Thus, we confirm that they are close too.
+
+### b)
+
+Do a pairs plot to investigate the joint sample distributions of the slope and intercept. Comment briefly on what you see. Is this potentially a problem?
+
+```{r}
+pairs(fit2, pars = c("alpha", "beta[1]"))
+```
+
+By observing the plot, we see a negative linear relationship between the intercept and the slope. This is a potential problem because there is collinearity in the model which will cause the model to have unstable parameter estimates.
+
+## Q4
+
+Add in mother’s IQ as a covariate and rerun the model. Please mean center the covariate before putting it into the model. Interpret the coefficient on the (centered) mum’s IQ.
+
+```{r}
+kid$mom_iq_centered <- kid$mom_iq - mean(kid$mom_iq)
+
+X <- as.matrix(kid[, c("mom_hs", "mom_iq_centered")]) 
+K <- 2
+
+data3 <- list(y = y,
+            N = length(y),
+            X = X,
+            K = K
+)
+
+fit3 <- stan(file = "code/models/kids3.stan",
+             data = data3,
+             iter = 1000)
+```
+
+Print the fitting result:
+
+```{r}
+print(fit3)
+```
+
+The coefficient on the (centered) mom’s IQ is estimated to be 0.56, which means on average, keeping other things constant, an unit increase in the mom's IQ will increase the kid's score by 0.56.
+
+
+## Q5
+
+Now, fit the regression model using lm:
+
+```{r}
+lm <- lm(kid_score ~ mom_hs + mom_iq_centered, data=kid)
+summary(lm)
+```
+
+The coefficient on the (centered) mom’s IQ from lm() is also estimated to be around 0.56, thus it agrees with the bayesian estimate.
+
+
+## Q6
+
+Plot the posterior estimates of scores by education of mother for mothers who have an IQ of 110.
+
+```{r}
+# producing posterior samples
+posterior_samples <- extract(fit3)
+
+# producing posterior the estimates of scores by education
+posterior_scores_hs0 <- posterior_samples[["alpha"]] + posterior_samples[["beta"]][,1] * 0 + 
+  posterior_samples[["beta"]][,2] * (110 - mean(kid$mom_iq))
+posterior_scores_hs1 <- posterior_samples[["alpha"]] + posterior_samples[["beta"]][,1] * 1 + 
+  posterior_samples[["beta"]][,2] * (110 - mean(kid$mom_iq))
+
+# plotting the estimates of scores
+density_data <- data.frame(
+  Scores = c(posterior_scores_hs0, posterior_scores_hs1),
+  Education = rep(c("education = 0", "education = 1"), each = length(posterior_scores_hs0))
+)
+
+ggplot(density_data, aes(x = Scores, fill = Education)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plots of Posterior Scores by Education (IQ = 110)",
+       x = "Scores", y = "Density") +
+  scale_fill_manual(values = c("blue", "red"))
+
+```
+
+The density plots show that for moms who had high school education and IQ of 110, their kids' scores are centered between 93-95, whereas for for moms who had no high school education and IQ of 110, their kids' scores are centered between 87-89.
+
+
+## Q7
+
+Plot the posterior predictive distribution for a new kid with a mother who graduated high school and has an IQ of 95.
+
+```{r}
+# producing posterior the estimates of scores 
+posterior_scores <- posterior_samples[["alpha"]] + posterior_samples[["beta"]][,1] * 1 + 
+  posterior_samples[["beta"]][,2] * (95 - mean(kid$mom_iq)) + posterior_samples[["sigma"]]
+
+# plotting the scores
+hist(posterior_scores, main = "Posterior Predictive Distribution for a New Kid",
+     xlab = "Predicted Scores")
+```
