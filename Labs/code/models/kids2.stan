@@ -8,6 +8,8 @@ parameters {
   real mu; 
   real<lower=0> sigma;
 }
+transformed parameters {
+}
 model {
   //priors
   mu ~ normal(mu0, sigma0);

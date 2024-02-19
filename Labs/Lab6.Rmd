@@ -1,0 +1,420 @@
+---
+title: "Lab 6"
+author: "Roxanne Li"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(here)
+# for bayes stuff
+library(rstan)
+library(bayesplot)
+library(loo)
+library(tidybayes)
+library(ggplot2)
+```
+
+Loading the data:
+```{r}
+ds <- read_rds("data/births_2017_sample.RDS")
+head(ds)
+```
+
+```{r}
+ds <- ds %>%
+  rename(birthweight = dbwt, gest = combgest) %>%
+  mutate(preterm = ifelse(gest<32, "Y", "N")) %>%
+  filter(ilive=="Y",gest< 99, birthweight<9.999)
+```
+
+
+## Q1
+
+Plot the distribution of mom's age:
+
+```{r}
+ggplot(ds, aes(x = mager)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Mom's Age",
+       x = "mager",
+       y = "frequency")
+```
+The histogram of mom's age shows that the ages of moms are centered around 30, ranging from 14 to 50.
+
+Plot the distributions of birth weights for preterm and non-preterm births:
+
+```{r}
+ggplot(ds, aes(x = birthweight, fill = preterm)) +
+  geom_density(alpha = 0.7) +
+  labs(title = "Distribution of Birth Weights by Preterm",
+       x = "birthweight",
+       y = "density",
+       fill = "preterm")
+```
+
+The density plot shows that preterm births tend to have lower birth weights whereas non-preterm births tend to have higher birth weights.         
+
+
+Plot log of birth weight against log of gestational age, and add a linear fit line on the plot:
+
+```{r}
+ggplot(ds, aes(x = log(gest), y = log(birthweight))) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Birth Weight vs Gestational Age",
+       x = "log(gest)",
+       y = "log(birthweight)")
+```
+The scatter plot and the linear fit line shows that there is a positive linear relationship between the log of birth weight and the log of gestational age. 
+
+
+## Q2
+
+Centering and standardizing gestational age:
+
+```{r}
+ds$log_gest_c <- (log(ds$gest) - mean(log(ds$gest)))/sd(log(ds$gest))
+```
+
+Specifying priors:
+
+```{r}
+set.seed(123)
+N <- 1000
+
+beta1 <- rnorm(N, mean = 0, sd = 1)
+beta2 <- rnorm(N, mean = 0, sd = 1)
+sigma <- abs(rnorm(N, mean = 0, sd = 1))  
+```
+
+
+Simulating log birth weights:
+
+```{r}
+set.seed(123)
+
+sim_log_birthweights <- matrix(NA, nrow = N, ncol = nrow(ds))
+
+for (i in 1:N) {
+  sim_log_birthweights[i, ] <- rnorm(nrow(ds), mean = beta1[i] + beta2[i] * ds$log_gest_c, sd = sigma[i])
+}
+```
+
+Plot the distribution of the simulated log birth weights:
+
+```{r}
+all_sim <- as.vector(sim_log_birthweights)
+
+hist(all_sim, main = "Distribution of Simulated (log) Birth Weights",
+     xlab = "Simulated (log) Birth Weight", col = "skyblue", border = "black", probability = TRUE)
+```
+
+Plot ten simulations of (log) birth weights against (log) gestational age:
+
+
+```{r}
+replicated_log_gest_c <- replicate(10, ds$log_gest_c)
+
+plot_data <- data.frame(Log_Gestational_Age = as.vector(replicated_log_gest_c),
+                        Simulated_Log_Birth_Weight = c(sim_log_birthweights[1:10, ]))
+
+ggplot(plot_data, aes(x = Log_Gestational_Age, y = Simulated_Log_Birth_Weight)) +
+  geom_point() +
+  labs(title = "Ten Simulations of (log) Birth Weights against (log) Gestational Age",
+       x = "Log Gestational Age",
+       y = "Simulated (log) Birth Weight") +
+  theme_minimal()
+```
+
+
+## Q3
+
+Based on Model 1, give an estimate of the expected birthweight of a baby who was born at a gestational age of 37 weeks.
+
+```{r}
+ds$log_weight <- log(ds$birthweight)
+
+# put into a list
+stan_data <- list(N = nrow(ds),
+                  log_weight = ds$log_weight,
+                  log_gest = ds$log_gest_c)
+
+mod1 <- stan(data = stan_data,
+             file = "code/models/simple_weight.stan",
+             iter = 500,
+             seed = 243)
+```
+
+```{r}
+gest <- 37
+log_estimate <- summary(mod1)$summary["beta[1]","mean"] + summary(mod1)$summary["beta[2]","mean"] * 
+  (log(gest) - mean(log(ds$gest)))/sd(log(ds$gest))
+estimate <- exp(log_estimate)
+cat("The estimate of the expected birthweight of a baby who was born at a gestational age of 37 weeks:", estimate, "kg\n")
+```
+
+
+## Q4
+
+Based on Model 1, create a scatter plot showing the underlying data (on the appropriate scale) and 50 posterior draws of the linear predictor.
+
+
+```{r}
+# Extract posterior draws
+set.seed(123)
+posterior <- as.matrix(mod1)
+draw_indices <- sample(1:dim(posterior)[1], size=50)
+posterior_draws <- posterior[draw_indices, ]
+  
+# Extract relevant parameters
+beta1_draws <- posterior_draws[, "beta[1]"]
+beta2_draws <- posterior_draws[, "beta[2]"]
+sigma_draws <- posterior_draws[, "sigma"]
+
+# Create a matrix to store the linear predictor draws
+linear_predictor_draws <- matrix(NA, nrow = 50, ncol = nrow(ds))
+
+# Generate posterior draws of the linear predictors
+for (i in 1:50) {
+  linear_predictor_draws[i, ] <- beta1_draws[i] + beta2_draws[i] * ds$log_gest_c
+}
+
+# Plot the scatter plot with 50 posterior draws of the linear predictor
+plot(ds$log_gest_c, ds$log_weight, pch = 16, col = "blue", 
+     xlab = "Log Gestational Age", 
+     ylab = "Log Birth Weight",
+     main = "Underlying Data and 50 Draws from the Linear Predictor")
+
+for (i in 1:50) {
+  lines(ds$log_gest_c, linear_predictor_draws[i, ], col = "gray", lty = 1, lwd=0.1)
+}
+
+```
+
+## Q5
+
+Write a Stan model to run Model 2, and run it. Report a summary of the results, and interpret the coefficient estimate on the interaction term.
+
+```{r}
+# encode preterm into numeric values
+ds$preterm_enc <- ifelse(ds$preterm=="Y", 1, 0)
+
+# put into a list
+stan_data2 <- list(N = nrow(ds),
+                  log_weight = ds$log_weight,
+                  log_gest = ds$log_gest_c,
+                  preterm = ds$preterm_enc)
+
+mod2 <- stan(data = stan_data2,
+             file = "code/models/model2.stan",
+             iter = 500,
+             seed = 243)
+```
+
+Print the result summary:
+
+```{r}
+summary_mod2 <- summary(mod2)
+
+# Extract estimates for beta1, beta2, beta3, beta4, and sigma
+estimates <- summary_mod2$summary[c("beta[1]", "beta[2]", "beta[3]", "beta[4]", "sigma"), ]
+print(estimates)
+```
+
+The parameter for the interaction term is $\beta_4$ and the coefficient estimate is approximately 0.20. This means that for preterm births, a unit increase in the log of gestational age will lead to a 0.2 more unit of increase in the log of birth weight than non-preterm births.
+
+
+## Q6
+
+Make a similar plot to the one above but for Model 2, and not using the bayes plot in built function (i.e. do it yourself just with geom_density)
+
+Drawing 100 datasets from the posterior predictive distribution of mod2:
+```{r}
+set.seed(1856)
+y <- ds$log_weight
+yrep2 <- extract(mod2)[["log_weight_rep"]]
+
+draw_indices <- sample(nrow(yrep2), size=100)
+predicted_y <- yrep2[draw_indices, ]
+dim(predicted_y)
+```
+
+
+Making the plot:
+
+```{r}
+# Create a data frame for plotting
+plot_data <- data.frame(
+  value = c(as.vector(predicted_y), y),
+  type = rep(c(rep("Predicted", nrow(predicted_y)), "Observed"), each = length(y)),
+  draw = rep(0:nrow(predicted_y), each = length(y))
+)
+
+# Plot using geom_density
+ggplot(plot_data, aes(x = value, color = type, group = interaction(type, draw))) +
+  geom_density(alpha = 0) +
+  scale_color_manual(values = c("black", "lightblue")) +
+  scale_size_manual(values = c(10, 1)) +
+  ggtitle("Distribution of Observed versus Predicted Birth Weights")
+```
+
+## Q7
+
+Use a test statistic of the proportion of births under 2.5kg. Calculate the test statistic for the data, and the posterior predictive samples for both models, and plot the comparison (one plot per model).
+
+Calculating the observed and posterior test statistics:
+```{r}
+observed_stats <- sum(ds$birthweight < 2.5) / nrow(ds)
+
+ppc_mod1 <- extract(mod1)[["log_weight_rep"]]
+ppc_mod2 <- extract(mod2)[["log_weight_rep"]]
+
+test_stat_mod1 <- rowMeans(ppc_mod1 < log(2.5))
+test_stat_mod2 <- rowMeans(ppc_mod2 < log(2.5))
+```
+
+Plot the test statistics for model 1 and model 2:
+
+```{r}
+par(mfrow = c(1, 2))
+hist(test_stat_mod1, main = "Model 1", xlab = "Proportion < 2.5kg", col = "lightblue", xlim = c(0.08, 0.13))
+abline(v = observed_stats, col = "black", lty = 1, lwd = 4)
+legend("topright", legend = "Observed", col = "black", lty = 1, lwd = 4)
+
+hist(test_stat_mod2, main = "Model 2", xlab = "Proportion < 2.5kg", col = "lightblue")
+abline(v = observed_stats, col = "black", lty = 1, lwd = 4)
+legend("topright", legend = "Observed", col = "black", lty = 1, lwd = 4)
+```
+
+
+## Q8
+
+Get the LOO estimate of elpd for Model 2 and compare the two models with the loo_compare function. Interpret the results.
+
+```{r}
+loglik1 <- extract(mod1)[["log_lik"]]
+loo1 <- loo(loglik1, save_psis = TRUE)
+
+loglik2 <- extract(mod2)[["log_lik"]]
+loo2 <- loo(loglik2, save_psis = TRUE)
+
+compare_result <- loo_compare(loo1, loo2)
+print(compare_result)
+```
+
+Based on the comparison result, we conclude that model 2 has a higher expected predictive performance (higher expected log predictive density) compared to model 1.
+
+We can also calculate the 95% credible interval of the difference to see if it includes 0:
+
+```{r}
+credible_interval <- c(
+  compare_result[2, "elpd_diff"] - 1.96 * compare_result[2, "se_diff"],
+  compare_result[2, "elpd_diff"] + 1.96 * compare_result[2, "se_diff"]
+)
+
+print(credible_interval)
+```
+
+Since 0 is clearly not in the 95% credible interval, we can say that the difference in the expected predictive performance between model 1 and model 2 is statistically significant (model 2 is significantly better).
+
+
+Create the PIT histogram for model 2 from scratch:
+
+```{r}
+observed_values <- ds$log_weight
+pit_values_mod2 <- numeric(length(observed_values))
+
+# Calculate PIT values:
+posterior_mod2 <- extract(mod2)$log_weight_rep
+
+for (i in seq_along(observed_values)) {
+  pit_values_mod2[i] <- mean(posterior_mod2[, i] < observed_values[i])
+}
+
+hist(pit_values_mod2, breaks = 20, main = "PIT Histogram for Model 2", xlab = "PIT Values", col = "lightblue")
+```
+
+
+## Q9
+
+Let's add mom's age to the model. First, we standardize the variable and take the log of it:
+
+```{r}
+ds$log_mager_c <- (log(ds$mager) - mean(log(ds$mager)))/sd(log(ds$mager))
+```
+
+We add `log_bmi_c` to the new model 3:
+
+```{r}
+# put into a list
+stan_data3 <- list(N = nrow(ds),
+                  log_weight = ds$log_weight,
+                  log_gest = ds$log_gest_c,
+                  preterm = ds$preterm_enc,
+                  log_mager = ds$log_mager_c)
+
+mod3 <- stan(data = stan_data3,
+             file = "code/models/model3.stan",
+             iter = 500,
+             seed = 243)
+```
+
+Print the result summary:
+
+```{r}
+summary_mod3 <- summary(mod3)
+
+# Extract estimates for beta1, beta2, beta3, beta4, and sigma
+estimates <- summary_mod3$summary[c("beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]", "sigma"), ]
+print(estimates)
+```
+The coefficient for $\beta_5$ can be interpreted as: on average, keep everything else the same, an unit increase in the log of mom's age, the log of the child's birth weight will increase by 0.015kg.
+
+To perform PPC for model 3, we first plot 100 data sets from the posterior predictive distribution versus the observed data:
+
+```{r}
+set.seed(123)
+y <- ds$log_weight
+yrep3 <- extract(mod3)[["log_weight_rep"]]
+
+# draw 100 datasets from the posterior predictive distribution
+samp100 <- sample(nrow(yrep3), 100)
+ppc_dens_overlay(y, yrep3[samp100, ]) + ggtitle("Distribution of Observed Versus Predicted Birth Weights")
+```
+
+By visually inspecting the plot, we don't see a big difference between this plot and the plot of model 2. So, we will calculate the LOO elpd for each model and compare.
+
+```{r}
+loglik2 <- extract(mod2)[["log_lik"]]
+loo2 <- loo(loglik2, save_psis = TRUE)
+
+loglik3 <- extract(mod3)[["log_lik"]]
+loo3 <- loo(loglik3, save_psis = TRUE)
+
+compare_result <- loo_compare(loo2, loo3)
+print(compare_result)
+```
+
+Based on the comparison result, we conclude that model 3 has a higher expected predictive performance (higher expected log predictive density) compared to model 2.
+
+We can also calculate the 95% credible interval of the difference to see if it includes 0:
+
+```{r}
+credible_interval <- c(
+  compare_result[2, "elpd_diff"] - 1.96 * compare_result[2, "se_diff"],
+  compare_result[2, "elpd_diff"] + 1.96 * compare_result[2, "se_diff"]
+)
+
+print(credible_interval)
+```
+
+Since 0 is not in the 95% credible interval, we can say that the difference in the expected predictive performance between model 2 and model 3 is statistically significant (model 3 is significantly better).
+
+
+
